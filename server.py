@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import uvicorn
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
-from starlette.responses import JSONResponse  # <--- CHANGED: Import JSONResponse
+from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP
@@ -40,12 +40,50 @@ QUOTES = {
 
 ALL_QUOTES = [q for qs in QUOTES.values() for q in qs]
 
-# --- Tools ---
+# --- Manual Tool Definitions (For the Smart Handler) ---
+# We define these explicitly so we can send them even if Drsti asks the wrong endpoint.
+
+TOOL_DEFINITIONS = [
+    {
+        "name": "get_quote",
+        "description": "Get a random quote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "One of 'motivation', 'wisdom', 'humor', or 'any'."
+                }
+            }
+        }
+    },
+    {
+        "name": "format_message",
+        "description": "Format a message in a fun way.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The text to format."},
+                "style": {"type": "string", "description": "One of 'box', 'reverse', 'shout', 'banner'."}
+            },
+            "required": ["message"]
+        }
+    },
+    {
+        "name": "server_info",
+        "description": "Get metadata about this MCP server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    }
+]
+
+# --- MCP Tool Logic ---
 
 @mcp.tool()
 def get_quote(category: str = "any") -> str:
     """Get a random quote.
-
     Args:
         category: One of 'motivation', 'wisdom', 'humor', or 'any' for a random pick.
     """
@@ -82,7 +120,6 @@ STYLES = {
 @mcp.tool()
 def format_message(message: str, style: str = "box") -> str:
     """Format a message in a fun way.
-
     Args:
         message: The text to format.
         style: One of 'box' (ASCII border), 'reverse' (backwards), 'shout' (LOUD), 'banner' (tripled letters).
@@ -94,7 +131,7 @@ def format_message(message: str, style: str = "box") -> str:
 
 @mcp.tool()
 def server_info() -> str:
-    """Get metadata about this MCP server: name, version, tools, and current time."""
+    """Get metadata about this MCP server."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     tools = ["get_quote", "format_message", "server_info"]
     return "\n".join([
@@ -104,23 +141,40 @@ def server_info() -> str:
         f"Time   : {now}",
     ])
 
-# --- Server Setup (Fixed for JSON Response) ---
+# --- The Smart Handler (The Fix) ---
 
-# 1. Create the dummy handler for Drsti's health check
-async def handle_sse_post_dummy(request):
+async def handle_sse_post_smart(request):
     """
-    Handles Drsti.ai's POST check by returning valid JSON.
+    Handles Drsti.ai's requests.
+    1. If it's a Health Check -> Returns {status: online}
+    2. If it's a Tool List Request -> Returns the Tool List JSON
     """
-    # CHANGED: Return a JSON dictionary, not a plain string.
+    try:
+        body = await request.json()
+    except:
+        body = {}
+
+    # Check if Drsti is asking for the tool list (method: tools/list)
+    if isinstance(body, dict) and body.get("method") == "tools/list":
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": body.get("id", 1),
+            "result": {
+                "tools": TOOL_DEFINITIONS
+            }
+        })
+
+    # Otherwise, assume it's a health check
     return JSONResponse({"status": "online", "protocol": "sse"})
 
-# 2. Get the actual MCP app
+# --- Server Setup ---
+
 mcp_app = mcp.sse_app()
 
-# 3. Create the parent Starlette app with explicit routing
-# We must put the POST route *before* the Mount so it doesn't get swallowed.
 routes = [
-    Route("/sse", handle_sse_post_dummy, methods=["POST"]),
+    # Intercept POST /sse with our smart handler
+    Route("/sse", handle_sse_post_smart, methods=["POST"]),
+    # Handle normal SSE traffic
     Mount("/", app=mcp_app)
 ]
 
