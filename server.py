@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import uvicorn
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
-from starlette.responses import Response
+from starlette.responses import JSONResponse  # <--- CHANGED: Import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP
@@ -104,16 +104,15 @@ def server_info() -> str:
         f"Time   : {now}",
     ])
 
-# --- Server Setup (The Fix) ---
+# --- Server Setup (Fixed for JSON Response) ---
 
 # 1. Create the dummy handler for Drsti's health check
 async def handle_sse_post_dummy(request):
     """
-    Drsti.ai sometimes sends a POST request to /sse to check if the server is alive.
-    The standard MCP server only allows GET on /sse.
-    This function intercepts that POST and says '200 OK' so Drsti connects successfully.
+    Handles Drsti.ai's POST check by returning valid JSON.
     """
-    return Response("OK")
+    # CHANGED: Return a JSON dictionary, not a plain string.
+    return JSONResponse({"status": "online", "protocol": "sse"})
 
 # 2. Get the actual MCP app
 mcp_app = mcp.sse_app()
@@ -129,5 +128,4 @@ app = Starlette(routes=routes)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    # Important: host must be 0.0.0.0 for Railway
     uvicorn.run(app, host="0.0.0.0", port=port)
