@@ -1,25 +1,23 @@
 import os
 import random
 import sys
-from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 
+import uvicorn
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
+from starlette.responses import Response
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
 
+# Initialize FastMCP
 SERVER_NAME = "QuoteBox"
 SERVER_VERSION = "1.0.0"
 
-mcp = FastMCP(
-    SERVER_NAME,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-    ),
-)
+mcp = FastMCP(SERVER_NAME)
 
-QUOTES: dict[str, list[str]] = {
+# --- Data ---
+
+QUOTES = {
     "motivation": [
         "The only way to do great work is to love what you do. — Steve Jobs",
         "It does not matter how slowly you go as long as you do not stop. — Confucius",
@@ -40,8 +38,9 @@ QUOTES: dict[str, list[str]] = {
     ],
 }
 
-ALL_QUOTES: list[str] = [q for qs in QUOTES.values() for q in qs]
+ALL_QUOTES = [q for qs in QUOTES.values() for q in qs]
 
+# --- Tools ---
 
 @mcp.tool()
 def get_quote(category: str = "any") -> str:
@@ -57,7 +56,6 @@ def get_quote(category: str = "any") -> str:
         return f"Unknown category '{cat}'. Choose from: motivation, wisdom, humor, any."
     return random.choice(QUOTES[cat])
 
-
 def _style_box(msg: str) -> str:
     lines = msg.split("\n")
     width = max(len(line) for line in lines)
@@ -65,18 +63,14 @@ def _style_box(msg: str) -> str:
     body = "\n".join(f"* {line:<{width}} *" for line in lines)
     return f"{border}\n{body}\n{border}"
 
-
 def _style_reverse(msg: str) -> str:
     return msg[::-1]
-
 
 def _style_shout(msg: str) -> str:
     return " ! ".join(msg.upper().split()) + " !!!"
 
-
 def _style_banner(msg: str) -> str:
     return "  ".join(c.upper() * 3 for c in msg if c.strip())
-
 
 STYLES = {
     "box": _style_box,
@@ -84,7 +78,6 @@ STYLES = {
     "shout": _style_shout,
     "banner": _style_banner,
 }
-
 
 @mcp.tool()
 def format_message(message: str, style: str = "box") -> str:
@@ -99,7 +92,6 @@ def format_message(message: str, style: str = "box") -> str:
         return f"Unknown style '{s}'. Choose from: box, reverse, shout, banner."
     return STYLES[s](message)
 
-
 @mcp.tool()
 def server_info() -> str:
     """Get metadata about this MCP server: name, version, tools, and current time."""
@@ -112,28 +104,30 @@ def server_info() -> str:
         f"Time   : {now}",
     ])
 
+# --- Server Setup (The Fix) ---
 
-def combine_lifespans(*lifespans):
-    @asynccontextmanager
-    async def combined(app):
-        async with AsyncExitStack() as stack:
-            for ls in lifespans:
-                await stack.enter_async_context(ls(app))
-            yield
-    return combined
+# 1. Create the dummy handler for Drsti's health check
+async def handle_sse_post_dummy(request):
+    """
+    Drsti.ai sometimes sends a POST request to /sse to check if the server is alive.
+    The standard MCP server only allows GET on /sse.
+    This function intercepts that POST and says '200 OK' so Drsti connects successfully.
+    """
+    return Response("OK")
 
+# 2. Get the actual MCP app
+mcp_app = mcp.sse_app()
 
-app = Starlette(
-    routes=[
-        Mount("/", app=mcp.sse_app()),
-        Mount("/mcp", app=mcp.streamable_http_app()),
-    ],
-    lifespan=combine_lifespans(
-        lambda app: mcp.session_manager.run()
-    ),
-)
+# 3. Create the parent Starlette app with explicit routing
+# We must put the POST route *before* the Mount so it doesn't get swallowed.
+routes = [
+    Route("/sse", handle_sse_post_dummy, methods=["POST"]),
+    Mount("/", app=mcp_app)
+]
+
+app = Starlette(routes=routes)
 
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.environ.get("PORT", 8000))
+    # Important: host must be 0.0.0.0 for Railway
     uvicorn.run(app, host="0.0.0.0", port=port)
