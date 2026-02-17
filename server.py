@@ -6,11 +6,17 @@ from datetime import datetime, timezone
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 SERVER_NAME = "QuoteBox"
 SERVER_VERSION = "1.0.0"
 
-mcp = FastMCP(SERVER_NAME)
+mcp = FastMCP(
+    SERVER_NAME,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 QUOTES: dict[str, list[str]] = {
     "motivation": [
