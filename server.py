@@ -1,6 +1,7 @@
 import os
 import random
 import sys
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 
 from starlette.applications import Starlette
@@ -112,7 +113,25 @@ def server_info() -> str:
     ])
 
 
-app = Starlette(routes=[Mount("/", app=mcp.sse_app())])
+def combine_lifespans(*lifespans):
+    @asynccontextmanager
+    async def combined(app):
+        async with AsyncExitStack() as stack:
+            for ls in lifespans:
+                await stack.enter_async_context(ls(app))
+            yield
+    return combined
+
+
+app = Starlette(
+    routes=[
+        Mount("/", app=mcp.sse_app()),
+        Mount("/mcp", app=mcp.streamable_http_app()),
+    ],
+    lifespan=combine_lifespans(
+        lambda app: mcp.session_manager.run()
+    ),
+)
 
 if __name__ == "__main__":
     import uvicorn
