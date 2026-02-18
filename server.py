@@ -30,7 +30,25 @@ KAMAL_QUOTES = [
     "Sympathy is a reaction. Empathy is an action. — Kamal Haasan",
 ]
 
-# --- The Tool Definition ---
+# --- The Logic (Regular Function) ---
+
+def get_entertainment_logic(category: str) -> str:
+    cat = category.lower().strip()
+    if "rajini" in cat:
+        return f"😎 THALAIVAR SAYS: {random.choice(RAJINI_JOKES)}"
+    elif "kamal" in cat:
+        return f"🎭 ULAGANAYAGAN SAYS: {random.choice(KAMAL_QUOTES)}"
+    else:
+        return "Please choose either 'rajini' or 'kamal'."
+
+# --- The MCP Tool Wrapper ---
+
+@mcp.tool()
+def get_entertainment(category: str) -> str:
+    """Get a Rajini joke or Kamal quote."""
+    return get_entertainment_logic(category)
+
+# --- The "Smart" Connection Handler (The Fix) ---
 
 TOOL_DEFINITIONS = [
     {
@@ -39,50 +57,51 @@ TOOL_DEFINITIONS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "category": {
-                    "type": "string",
-                    "description": "Either 'rajini' (for jokes) or 'kamal' (for wisdom)."
-                }
+                "category": {"type": "string", "description": "Either 'rajini' or 'kamal'."}
             },
             "required": ["category"]
         }
     }
 ]
 
-# --- The Logic ---
-
-@mcp.tool()
-def get_entertainment(category: str) -> str:
-    """Get a Rajini joke or Kamal quote."""
-    cat = category.lower().strip()
-    
-    if "rajini" in cat:
-        return f"😎 THALAIVAR SAYS: {random.choice(RAJINI_JOKES)}"
-    elif "kamal" in cat:
-        return f"🎭 ULAGANAYAGAN SAYS: {random.choice(KAMAL_QUOTES)}"
-    else:
-        return "Please choose either 'rajini' or 'kamal'."
-
-# --- The Connection Fix (Crucial for Drsti) ---
-
 async def handle_drsti_connection(request):
     """
-    Handles Drsti.ai's connection checks.
+    Handles Drsti.ai's requests manually to prevent connection errors.
     """
     try:
         body = await request.json()
     except:
         body = {}
 
-    # If Drsti asks for tools, give them the list
-    if isinstance(body, dict) and body.get("method") == "tools/list":
+    method = body.get("method")
+
+    # 1. If Drsti asks for the list of tools
+    if method == "tools/list":
         return JSONResponse({
             "jsonrpc": "2.0",
             "id": body.get("id", 1),
             "result": { "tools": TOOL_DEFINITIONS }
         })
 
-    # Otherwise, just say we are online
+    # 2. If Drsti tries to RUN the tool (The Critical Fix)
+    if method == "tools/call":
+        params = body.get("params", {}).get("arguments", {})
+        tool_name = body.get("params", {}).get("name")
+        
+        if tool_name == "get_entertainment":
+            # Run the logic manually!
+            result_text = get_entertainment_logic(params.get("category", "rajini"))
+            
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": body.get("id"),
+                "result": {
+                    "content": [{"type": "text", "text": result_text}],
+                    "isError": False
+                }
+            })
+
+    # 3. Default Health Check (Only return this if nothing else matches)
     return JSONResponse({"status": "online", "protocol": "sse"})
 
 # --- Run Server ---
@@ -90,6 +109,7 @@ async def handle_drsti_connection(request):
 mcp_app = mcp.sse_app()
 
 routes = [
+    # We hijack POST /sse to ensure Drsti requests work perfectly
     Route("/sse", handle_drsti_connection, methods=["POST"]),
     Mount("/", app=mcp_app)
 ]
